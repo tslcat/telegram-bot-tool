@@ -9,8 +9,14 @@ services:
       - ./data:/app/data
     environment:
       - PYTHONUNBUFFERED=1
-      # ==================== 请修改下面两行 ====================
+      
+      # ==================== 电报 Bot 配置 ====================
       - TELEGRAM_TOKEN=8799734900:AAFnst5G7yhYLXtRxKTMbX8rUeF9EJTjPE8
       - OWNER_CHAT_ID=你的ChatID
       - PUBLIC_BASE_URL=https://你的域名.com
+      
+      # ==================== WebDAV 备份配置 ====================
+      - WEBDAV_URL=https://你的WebDAV地址/remote.php/dav/files/用户名/
+      - WEBDAV_USERNAME=你的WebDAV用户名
+      - WEBDAV_PASSWORD=你的WebDAV密码
       - BACKUP_INTERVAL_HOURS=24
