@@ -13,3 +13,12 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
+      # 以下为电报 Bot 配置（推荐使用 .env 文件，这里也可直接填写）
+      - TELEGRAM_TOKEN=你的BotToken
+      - OWNER_CHAT_ID=你的ChatID
+      - PUBLIC_BASE_URL=https://你的域名.com
+      - WEB_PORT=8080
+      - WEBDAV_URL=
+      - WEBDAV_USERNAME=
+      - WEBDAV_PASSWORD=
+      - BACKUP_INTERVAL_HOURS=24
