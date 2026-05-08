@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram 个人工具箱 Bot - 最终优化版
+Telegram 个人工具箱 Bot - 最终稳定版
 """
 
 import logging
@@ -25,10 +25,6 @@ from web import app as flask_app
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 状态
-NOTE_CONTENT = 1
-BOOKMARK_URL = 2
-
 async def check_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if update.effective_user.id != OWNER_CHAT_ID:
         await update.message.reply_text("⛔ 仅限主人使用")
@@ -43,13 +39,6 @@ def get_main_menu():
         [InlineKeyboardButton("☁️ 备份管理", callback_data="menu_backup")],
     ]
     return InlineKeyboardMarkup(keyboard)
-
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 **欢迎使用 Telegram 个人工具箱**！\n请选择功能：",
-        reply_markup=get_main_menu(),
-        parse_mode=ParseMode.MARKDOWN
-    )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_owner(update, context): return
@@ -118,7 +107,7 @@ async def list_notes_from_query(query):
         return
     text = "📝 **所有记事本**：\n\n"
     for note in notes:
-        text += f"**#{note['id']}** {note['content'][:50]}...\n"
+        text += f"**#{note['id']}** {note['content'][:60]}...\n"
     await query.edit_message_text(text, reply_markup=get_main_menu(), parse_mode=ParseMode.MARKDOWN)
 
 async def list_bookmarks_from_query(query):
@@ -131,25 +120,24 @@ async def list_bookmarks_from_query(query):
         text += f"**#{bm['id']}** {bm['title']}\n🔗 {bm['url']}\n"
     await query.edit_message_text(text, reply_markup=get_main_menu(), parse_mode=ParseMode.MARKDOWN)
 
-# ==================== 记事本（简化版） ====================
-async def handle_note_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('adding_note'):
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    
+    # 处理添加记事本
+    if context.user_data.get('adding_note'):
+        note_id = add_note("记事", text)
+        await update.message.reply_text(f"✅ 记事添加成功！ID: {note_id}")
+        context.user_data.clear()
+        await start(update, context)
         return
-    content = update.message.text.strip()
-    note_id = add_note("记事", content)  # 不再需要标题
-    await update.message.reply_text(f"✅ 记事添加成功！ID: {note_id}")
-    context.user_data.clear()
-    await show_main_menu(update, context)  # 操作完成后返回主菜单
-
-# ==================== 收藏夹 ====================
-async def handle_bookmark_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('adding_bookmark'):
+    
+    # 处理添加收藏夹
+    if context.user_data.get('adding_bookmark'):
+        bookmark_id = add_bookmark("收藏", text)
+        await update.message.reply_text(f"✅ 收藏添加成功！ID: {bookmark_id}")
+        context.user_data.clear()
+        await start(update, context)
         return
-    url = update.message.text.strip()
-    bookmark_id = add_bookmark("收藏", url)
-    await update.message.reply_text(f"✅ 收藏添加成功！ID: {bookmark_id}")
-    context.user_data.clear()
-    await show_main_menu(update, context)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_owner(update, context): return
@@ -160,11 +148,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(filepath)
     image_url = f"{PUBLIC_BASE_URL}/images/{filename}"
     await update.message.reply_text(f"✅ 上传成功！\n🔗 {image_url}")
-    await show_main_menu(update, context)
+    await start(update, context)
 
-def main
-
-():
+def main():
     init_db()
     def run_flask():
         flask_app.run(host="0.0.0.0", port=8080, debug=False, use_reloader=False)
@@ -173,9 +159,7 @@ def main
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_content))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_bookmark_url))
-
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.run_polling()
 
