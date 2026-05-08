@@ -1,4 +1,4 @@
-# Telegram 个人工具箱 Bot
+# Telegram 个人工具箱（记事本、图床、收藏夹） Bot
 
 一个功能强大的 Telegram Bot，支持图床、记事本、网络收藏夹，并支持 WebDAV 自动备份和导入导出。完全 Docker 化，支持 GitHub Actions 自动构建并推送到 Docker Hub。
 
