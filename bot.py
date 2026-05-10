@@ -1,341 +1,598 @@
 #!/usr/bin/env python3
 """
-Telegram 个人工具箱 Bot - 最终稳定版 v3.0 (完整自包含版)
-已修复所有启动问题 + 完整数据库功能
+Telegram 个人工具箱 Bot
+支持图床、记事本、收藏夹 + WebDAV 备份
 """
 
 import logging
 import os
 import uuid
-import sqlite3
-from threading import Thread
 from datetime import datetime
+from threading import Thread
+from io import BytesIO
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters
+    ConversationHandler, ContextTypes, filters
 )
 from telegram.constants import ParseMode
-from telegram.error import TimedOut, NetworkError
-from telegram.request import HTTPXRequest
 
-# ==================== 配置 ====================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-OWNER_CHAT_ID = int(os.getenv("OWNER_CHAT_ID", "0"))
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8080")
-IMAGES_DIR = os.getenv("IMAGES_DIR", "/app/images")
-DB_FILE = os.getenv("DB_FILE", "/app/data/bot.db")
+from config import (
+    TELEGRAM_TOKEN, OWNER_CHAT_ID, PUBLIC_BASE_URL,
+    IMAGES_DIR, BACKUP_INTERVAL_HOURS
+)
+from database import (
+    init_db, add_note, get_all_notes, get_note, update_note, delete_note,
+    add_bookmark, get_all_bookmarks, get_bookmark, update_bookmark, delete_bookmark
+)
+from webdav_backup import backup_now, restore_from_zip, create_backup_zip
+from web import app as flask_app
 
+# 日志配置
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ==================== 数据库功能 (自包含) ====================
-def init_db():
-    os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+# 状态常量
+ADD_NOTE_TITLE, ADD_NOTE_CONTENT = range(2)
+ADD_BOOKMARK_URL, ADD_BOOKMARK_REMARK = range(2, 4)
+EDIT_NOTE_TITLE, EDIT_NOTE_CONTENT = range(4, 6)
+EDIT_BOOKMARK = range(6, 9)  # 简化处理
+
+# ==================== 权限检查 ====================
+async def check_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """检查是否为所有者"""
+    if update.effective_user.id != OWNER_CHAT_ID:
+        await update.message.reply_text("⛔ 抱歉，此 Bot 仅限主人使用。")
+        return False
+    return True
+
+# ==================== 主菜单 ====================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
     
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            content TEXT,
-            created_at TEXT DEFAULT (datetime('now', 'localtime'))
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS bookmarks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            url TEXT,
-            created_at TEXT DEFAULT (datetime('now', 'localtime'))
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    logger.info("✅ 数据库初始化完成")
-
-def add_note(title, content):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT INTO notes (title, content) VALUES (?, ?)", (title, content))
-    note_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    return note_id
-
-def get_all_notes():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT id, title, content, created_at FROM notes ORDER BY id DESC")
-    rows = c.fetchall()
-    conn.close()
-    return [
-        {"id": r[0], "title": r[1] or "无标题", "content": r[2], "created_at": r[3]} 
-        for r in rows
-    ]
-
-def delete_note(note_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM notes WHERE id = ?", (note_id,))
-    conn.commit()
-    conn.close()
-
-def add_bookmark(title, url):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT INTO bookmarks (title, url) VALUES (?, ?)", (title, url))
-    bookmark_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    return bookmark_id
-
-def get_all_bookmarks():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT id, title, url, created_at FROM bookmarks ORDER BY id DESC")
-    rows = c.fetchall()
-    conn.close()
-    return [
-        {"id": r[0], "title": r[1] or "无标题", "url": r[2], "created_at": r[3]} 
-        for r in rows
-    ]
-
-def delete_bookmark(bookmark_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
-    conn.commit()
-    conn.close()
-
-# ==================== 安全 API 调用 ====================
-async def safe_answer(query, text: str = None):
-    try:
-        await query.answer(text)
-    except (TimedOut, NetworkError) as e:
-        logger.warning(f"⚠️ Callback answer 超时/网络问题: {e}")
-    except Exception as e:
-        logger.error(f"❌ Callback answer 失败: {e}")
-
-async def safe_edit_message(query, text: str, reply_markup=None, parse_mode=None):
-    try:
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
-    except (TimedOut, NetworkError) as e:
-        logger.warning(f"⚠️ Edit message 超时/网络问题: {e}")
-    except Exception as e:
-        logger.error(f"❌ Edit message 失败: {e}")
-
-# ==================== 菜单 ====================
-def get_main_menu():
     keyboard = [
         [InlineKeyboardButton("📷 图床管理", callback_data="menu_images")],
         [InlineKeyboardButton("📝 记事本", callback_data="menu_notes")],
         [InlineKeyboardButton("🔖 收藏夹", callback_data="menu_bookmarks")],
         [InlineKeyboardButton("☁️ 备份管理", callback_data="menu_backup")],
     ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ==================== 处理器 ====================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_CHAT_ID:
-        await update.message.reply_text("⛔ 仅限主人使用")
-        return
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        "👋 **欢迎使用 Telegram 个人工具箱 v3.0**！\n\n✅ 数据库已就绪\n请选择功能：",
-        reply_markup=get_main_menu(),
+        "👋 欢迎使用 **Telegram 个人工具箱**！\n\n"
+        "请选择功能：",
+        reply_markup=reply_markup,
         parse_mode=ParseMode.MARKDOWN
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await safe_answer(query)
+    await query.answer()
     
     if query.from_user.id != OWNER_CHAT_ID:
+        await query.edit_message_text("⛔ 权限不足")
         return
     
     data = query.data
-
+    
     if data == "menu_images":
-        await safe_edit_message(
-            query, 
-            "📷 **图床管理**\n\n直接发送图片即可上传\n上传后会返回可访问链接", 
-            reply_markup=get_main_menu()
-        )
+        await show_images_menu(query)
     elif data == "menu_notes":
-        notes = get_all_notes()
-        if not notes:
-            text = "📭 还没有任何记事\n\n点击「添加新记事」开始使用"
-        else:
-            text = "📝 **所有记事本**：\n\n"
-            for note in notes[:10]:
-                text += f"**#{note['id']}** {note['title']}\n{note['content'][:80]}...\n\n"
-            if len(notes) > 10:
-                text += f"... 还有 {len(notes)-10} 条"
-        keyboard = [
-            [InlineKeyboardButton("➕ 添加新记事", callback_data="add_note")],
-            [InlineKeyboardButton("🗑️ 删除记事（回复 /del_note ID）", callback_data="back_main")],
-            [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_main")],
-        ]
-        await safe_edit_message(query, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        await show_notes_menu(query)
     elif data == "menu_bookmarks":
-        bookmarks = get_all_bookmarks()
-        if not bookmarks:
-            text = "📭 还没有任何收藏\n\n点击「添加新收藏」开始使用"
-        else:
-            text = "🔖 **所有收藏夹**：\n\n"
-            for bm in bookmarks[:8]:
-                text += f"**#{bm['id']}** {bm['title']}\n🔗 {bm['url']}\n\n"
-            if len(bookmarks) > 8:
-                text += f"... 还有 {len(bookmarks)-8} 条"
-        keyboard = [
-            [InlineKeyboardButton("➕ 添加新收藏", callback_data="add_bookmark")],
-            [InlineKeyboardButton("🗑️ 删除收藏（回复 /del_bookmark ID）", callback_data="back_main")],
-            [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_main")],
-        ]
-        await safe_edit_message(query, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        await show_bookmarks_menu(query)
     elif data == "menu_backup":
-        keyboard = [
-            [InlineKeyboardButton("☁️ 立即备份", callback_data="do_backup")],
-            [InlineKeyboardButton("📤 导出数据", callback_data="export_data")],
-            [InlineKeyboardButton("📥 导入数据", callback_data="import_data")],
-            [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_main")],
-        ]
-        text = "☁️ **备份管理**\n\n默认每24小时自动备份到 WebDAV\n请选择操作："
-        await safe_edit_message(query, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        await show_backup_menu(query)
+    elif data == "delete_notes_menu":
+        await show_delete_notes_menu(query)
+    elif data == "delete_bookmarks_menu":
+        await show_delete_bookmarks_menu(query)
+    elif data.startswith("note_"):
+        await handle_note_action(query, data)
+    elif data.startswith("bookmark_"):
+        await handle_bookmark_action(query, data)
     elif data == "back_main":
-        await safe_edit_message(
-            query, 
-            "👋 **欢迎使用 Telegram 个人工具箱 v3.0**！\n请选择功能：", 
-            reply_markup=get_main_menu(), 
-            parse_mode=ParseMode.MARKDOWN
-        )
-    elif data == "add_note":
-        await query.message.reply_text(
-            "📝 请输入记事内容：\n\n（格式：标题|内容，例如：\n会议记录|今天讨论了项目进度...）"
-        )
-        context.user_data['adding_note'] = True
-    elif data == "add_bookmark":
-        await query.message.reply_text(
-            "🔖 请输入收藏内容：\n\n（格式：标题|URL，例如：\nGitHub|https://github.com）"
-        )
-        context.user_data['adding_bookmark'] = True
-    elif data == "do_backup":
-        await safe_edit_message(query, "☁️ 正在执行备份到 WebDAV...")
-        await query.message.reply_text("✅ 备份成功！（演示模式 - 实际WebDAV功能待接入）")
-    elif data == "export_data":
-        await safe_edit_message(query, "📤 正在生成数据导出包...")
-        await query.message.reply_text("✅ 导出完成！（演示模式）")
-    elif data == "import_data":
-        await safe_edit_message(query, "📥 请直接上传 `.zip` 备份文件即可导入")
+        await show_main_menu(query)
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    
-    if context.user_data.get('adding_note'):
-        if "|" in text:
-            title, content = text.split("|", 1)
-        else:
-            title, content = "记事", text
-        note_id = add_note(title.strip(), content.strip())
-        await update.message.reply_text(f"✅ 记事添加成功！ID: #{note_id}")
-        context.user_data.clear()
-        await start(update, context)
-        return
-    
-    if context.user_data.get('adding_bookmark'):
-        if "|" in text:
-            title, url = text.split("|", 1)
-        else:
-            title, url = text, text
-        bookmark_id = add_bookmark(title.strip(), url.strip())
-        await update.message.reply_text(f"✅ 收藏添加成功！ID: #{bookmark_id}")
-        context.user_data.clear()
-        await start(update, context)
-        return
+async def show_main_menu(query):
+    keyboard = [
+        [InlineKeyboardButton("📷 图床管理", callback_data="menu_images")],
+        [InlineKeyboardButton("📝 记事本", callback_data="menu_notes")],
+        [InlineKeyboardButton("🔖 收藏夹", callback_data="menu_bookmarks")],
+        [InlineKeyboardButton("☁️ 备份管理", callback_data="menu_backup")],
+    ]
+    await query.edit_message_text(
+        "👋 欢迎使用 **Telegram 个人工具箱**！\n\n请选择功能：",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# ==================== 图床功能 ====================
+async def show_images_menu(query):
+    keyboard = [
+        [InlineKeyboardButton("📤 上传新图片（直接发送图片即可）", callback_data="noop")],
+        [InlineKeyboardButton("📋 查看图片列表", callback_data="list_images")],
+        [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_main")],
+    ]
+    await query.edit_message_text(
+        "📷 **图床管理**\n\n"
+        "• 直接在聊天中发送图片即可自动上传\n"
+        "• 支持多种格式：URL、HTML、BBCode、Markdown\n"
+        "• 图片将保存在服务器并生成公开链接\n"
+        "• 链接示例：{}/images/文件名".format(PUBLIC_BASE_URL),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_CHAT_ID:
+    if not await check_owner(update, context):
         return
-    photo = update.message.photo[-1]
+    
+    photo = update.message.photo[-1]  # 最高分辨率
     file = await context.bot.get_file(photo.file_id)
-    filename = f"{uuid.uuid4().hex}.jpg"
+    
+    # 生成唯一文件名
+    ext = ".jpg"  # Telegram 图片通常是 jpg
+    filename = f"{uuid.uuid4().hex}{ext}"
     filepath = os.path.join(IMAGES_DIR, filename)
+    
+    # 下载图片
     await file.download_to_drive(filepath)
+    
+    # 生成公开链接
     image_url = f"{PUBLIC_BASE_URL}/images/{filename}"
+    
+    # 支持多种格式
+    html = f'<img src="{image_url}" alt="image" />'
+    bbcode = f'[img]{image_url}[/img]'
+    markdown = f'![image]({image_url})'
+    
     await update.message.reply_text(
-        f"✅ 上传成功！\n\n"
-        f"🔗 **URL**: {image_url}\n\n"
-        f"HTML: `<img src=\"{image_url}\">`\n"
-        f"Markdown: `![图片]({image_url})`\n"
-        f"BBCode: `[img]{image_url}[/img]`"
+        f"✅ **图片上传成功！**\n\n"
+        f"**URL:**\n`{image_url}`\n\n"
+        f"**HTML:**\n`{html}`\n\n"
+        f"**BBCode:**\n`{bbcode}`\n\n"
+        f"**Markdown:**\n`{markdown}`\n\n"
+        f"📁 文件名：`{filename}`\n"
+        f"💡 点击链接可直接复制使用",
+        parse_mode=ParseMode.MARKDOWN
     )
-    await start(update, context)
+    logger.info(f"用户上传图片: {filename}")
 
-async def delete_note_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_CHAT_ID:
+async def list_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
         return
-    try:
-        note_id = int(context.args[0])
+    
+    files = sorted(os.listdir(IMAGES_DIR), reverse=True)[:20]  # 最近20张
+    
+    if not files:
+        await update.message.reply_text("📭 还没有上传任何图片")
+        return
+    
+    text = "📷 **最近上传的图片**（最多显示20张）：\n\n"
+    for f in files:
+        url = f"{PUBLIC_BASE_URL}/images/{f}"
+        text += f"• [{f}]({url})\n"
+    
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+
+# ==================== 记事本功能 ====================
+async def show_notes_menu(query):
+    notes = get_all_notes()
+    
+    keyboard = [
+        [InlineKeyboardButton("➕ 添加新记事", callback_data="add_note")],
+        [InlineKeyboardButton("📋 查看所有记事", callback_data="list_notes")],
+    ]
+    if notes:
+        keyboard.append([InlineKeyboardButton("🗑️ 批量删除", callback_data="delete_notes_menu")])
+    keyboard.append([InlineKeyboardButton("🔙 返回主菜单", callback_data="back_main")])
+    
+    text = f"📝 **记事本** ({len(notes)} 条记录)\n\n请选择操作："
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+
+async def add_note_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return ConversationHandler.END
+    
+    await update.message.reply_text(
+        "📝 **添加新记事**\n\n"
+        "请先输入记事标题（例如：会议记录）：",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    return ADD_NOTE_TITLE
+
+async def add_note_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['note_title'] = update.message.text.strip()
+    await update.message.reply_text(
+        "✅ 标题已记录！\n\n"
+        "现在请输入记事内容（支持多行）：",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    return ADD_NOTE_CONTENT
+
+async def add_note_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    title = context.user_data['note_title']
+    content = update.message.text.strip()
+    
+    note_id = add_note(title, content)
+    
+    await update.message.reply_text(
+        f"✅ **记事添加成功！**\n\n"
+        f"ID: `{note_id}`\n"
+        f"标题: {title}\n\n"
+        f"内容预览:\n{content[:100]}{'...' if len(content) > 100 else ''}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def list_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
+    
+    notes = get_all_notes()
+    
+    if not notes:
+        await update.message.reply_text("📭 还没有任何记事")
+        return
+    
+    text = "📝 **所有记事本**：\n\n"
+    keyboard = []
+    
+    for note in notes:
+        text += f"**ID {note['id']}** | {note['title']}\n"
+        text += f"更新: {note['updated_at']}\n\n"
+        keyboard.append([
+            InlineKeyboardButton(f"✏️ 编辑 #{note['id']}", callback_data=f"note_edit_{note['id']}"),
+            InlineKeyboardButton(f"🗑️ 删除 #{note['id']}", callback_data=f"note_delete_{note['id']}")
+        ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 返回记事本菜单", callback_data="menu_notes")])
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def show_delete_notes_menu(query):
+    """显示带序号的记事本列表供删除"""
+    notes = get_all_notes()
+    if not notes:
+        await query.edit_message_text("📭 没有可删除的记事本", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回记事本菜单", callback_data="menu_notes")]]))
+        return
+    
+    text = "🗑️ **请选择要删除的记事本（点击序号）：**\n\n"
+    keyboard = []
+    
+    for i, note in enumerate(notes, 1):
+        text += f"{i}. {note['title']} (更新: {note['updated_at'][:10]})\n"
+        keyboard.append([InlineKeyboardButton(f"❌ 删除 {i}", callback_data=f"note_delete_{note['id']}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 返回记事本菜单", callback_data="menu_notes")])
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+
+async def handle_note_action(query, data):
+    if data == "add_note":
+        # 启动添加流程（需要发送新消息）
+        await query.message.reply_text(
+            "请使用 /addnote 命令开始添加记事"
+        )
+        return
+    
+    if data == "list_notes":
+        await list_notes_from_query(query)
+        return
+    
+    if data.startswith("note_edit_"):
+        note_id = int(data.split("_")[2])
+        note = get_note(note_id)
+        if note:
+            context = {"note_id": note_id, "note": note}
+            # 简化：直接回复编辑提示
+            await query.message.reply_text(
+                f"✏️ **编辑记事 #{note_id}**\n\n"
+                f"当前标题: {note['title']}\n\n"
+                f"请发送新标题（或输入 /cancel 取消）：",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            # 这里可以扩展为 ConversationHandler，但为简化代码，省略完整编辑流程
+            # 实际生产可添加 edit_note_title 等状态
+        return
+    
+    if data.startswith("note_delete_"):
+        note_id = int(data.split("_")[2])
         delete_note(note_id)
-        await update.message.reply_text(f"🗑️ 已删除记事 #{note_id}")
-    except (IndexError, ValueError):
-        await update.message.reply_text("用法：/del_note <ID>\n例如：/del_note 5")
-
-async def delete_bookmark_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_CHAT_ID:
+        await query.edit_message_text(f"✅ 已删除记事 #{note_id}")
         return
+
+async def list_notes_from_query(query):
+    notes = get_all_notes()
+    if not notes:
+        await query.edit_message_text("📭 还没有任何记事")
+        return
+    
+    text = "📝 **所有记事本**：\n\n"
+    for note in notes:
+        text += f"**#{note['id']}** {note['title']}\n"
+    
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+
+# ==================== 收藏夹功能 ====================
+async def show_bookmarks_menu(query):
+    bookmarks = get_all_bookmarks()
+    
+    keyboard = [
+        [InlineKeyboardButton("➕ 添加新收藏", callback_data="add_bookmark")],
+        [InlineKeyboardButton("📋 查看所有收藏", callback_data="list_bookmarks")],
+    ]
+    if bookmarks:
+        keyboard.append([InlineKeyboardButton("🗑️ 批量删除", callback_data="delete_bookmarks_menu")])
+    keyboard.append([InlineKeyboardButton("🔙 返回主菜单", callback_data="back_main")])
+    
+    text = f"🔖 **网络收藏夹** ({len(bookmarks)} 条记录)\n\n请选择操作："
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+
+async def add_bookmark_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return ConversationHandler.END
+    
+    await update.message.reply_text(
+        "🔖 **添加新收藏**\n\n"
+        "请发送收藏的 URL（例如：https://github.com）：",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    return ADD_BOOKMARK_URL
+
+async def add_bookmark_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.strip()
+    if not url.startswith(("http://", "https://")):
+        await update.message.reply_text("❌ URL 格式不正确，请重新发送以 http:// 或 https:// 开头的链接")
+        return ADD_BOOKMARK_URL
+    
+    context.user_data['bookmark_url'] = url
+    await update.message.reply_text(
+        "✅ URL 已记录！\n\n"
+        "请输入标题（例如：GitHub 官网）：",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    return ADD_BOOKMARK_REMARK  # 复用状态，实际是标题
+
+async def add_bookmark_remark(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    title = update.message.text.strip()
+    url = context.user_data['bookmark_url']
+    
+    # 这里 remark 留空，用户可后续编辑
+    bookmark_id = add_bookmark(title, url, "")
+    
+    await update.message.reply_text(
+        f"✅ **收藏添加成功！**\n\n"
+        f"ID: `{bookmark_id}`\n"
+        f"标题: {title}\n"
+        f"URL: {url}\n\n"
+        f"💡 可使用 /editbookmark {bookmark_id} 添加备注",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def list_bookmarks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
+    
+    bookmarks = get_all_bookmarks()
+    
+    if not bookmarks:
+        await update.message.reply_text("📭 还没有任何收藏")
+        return
+    
+    text = "🔖 **所有收藏夹**：\n\n"
+    keyboard = []
+    
+    for bm in bookmarks:
+        text += f"**ID {bm['id']}** | {bm['title']}\n"
+        text += f"🔗 {bm['url']}\n"
+        if bm['remark']:
+            text += f"📝 {bm['remark']}\n"
+        text += f"更新: {bm['updated_at']}\n\n"
+        
+        keyboard.append([
+            InlineKeyboardButton(f"✏️ 编辑 #{bm['id']}", callback_data=f"bookmark_edit_{bm['id']}"),
+            InlineKeyboardButton(f"🗑️ 删除 #{bm['id']}", callback_data=f"bookmark_delete_{bm['id']}")
+        ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 返回收藏夹菜单", callback_data="menu_bookmarks")])
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN,
+        disable_web_page_preview=True
+    )
+
+async def handle_bookmark_action(query, data):
+    # 类似 note 的处理，简化实现
+    if data.startswith("bookmark_delete_"):
+        bm_id = int(data.split("_")[2])
+        delete_bookmark(bm_id)
+        await query.edit_message_text(f"✅ 已删除收藏 #{bm_id}")
+        return
+    
+    if data.startswith("bookmark_edit_"):
+        bm_id = int(data.split("_")[2])
+        bm = get_bookmark(bm_id)
+        if bm:
+            await query.message.reply_text(
+                f"✏️ **编辑收藏 #{bm_id}**\n\n"
+                f"当前标题: {bm['title']}\n"
+                f"URL: {bm['url']}\n"
+                f"备注: {bm['remark'] or '无'}\n\n"
+                f"请发送新标题（格式：标题|备注）：",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        return
+
+# ==================== 备份功能 ====================
+async def show_backup_menu(query):
+    keyboard = [
+        [InlineKeyboardButton("☁️ 立即备份到 WebDAV", callback_data="do_backup")],
+        [InlineKeyboardButton("📤 导出数据（发送 zip）", callback_data="export_data")],
+        [InlineKeyboardButton("📥 导入数据（上传 zip）", callback_data="import_data")],
+        [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_main")],
+    ]
+    
+    text = (
+        "☁️ **备份管理**\n\n"
+        f"• WebDAV 自动备份：每 {BACKUP_INTERVAL_HOURS} 小时\n"
+        "• 支持完整导出/导入（数据库 + 图片）\n"
+        "• 建议定期手动备份重要数据"
+    )
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+
+async def do_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
+    
+    await update.message.reply_text("⏳ 正在创建备份并上传到 WebDAV，请稍候...")
+    
     try:
-        bookmark_id = int(context.args[0])
-        delete_bookmark(bookmark_id)
-        await update.message.reply_text(f"🗑️ 已删除收藏 #{bookmark_id}")
-    except (IndexError, ValueError):
-        await update.message.reply_text("用法：/del_bookmark <ID>\n例如：/del_bookmark 3")
+        zip_path = backup_now()
+        await update.message.reply_text(
+            f"✅ **备份完成！**\n\n"
+            f"本地文件：`{os.path.basename(zip_path)}`\n"
+            f"已上传到 WebDAV（如果配置正确）",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ 备份失败: {str(e)}")
+
+async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
+    
+    await update.message.reply_text("⏳ 正在生成导出文件...")
+    
+    try:
+        zip_path = create_backup_zip()
+        with open(zip_path, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=os.path.basename(zip_path),
+                caption="✅ 数据导出完成！包含数据库和所有图片。"
+            )
+        os.remove(zip_path)  # 发送后删除临时文件
+    except Exception as e:
+        await update.message.reply_text(f"❌ 导出失败: {str(e)}")
+
+async def handle_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
+    
+    if not update.message.document:
+        await update.message.reply_text("请上传 .zip 备份文件")
+        return
+    
+    doc = update.message.document
+    if not doc.file_name.endswith(".zip"):
+        await update.message.reply_text("❌ 只支持 .zip 格式的备份文件")
+        return
+    
+    await update.message.reply_text("⏳ 正在下载并恢复数据...")
+    
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        zip_path = os.path.join(IMAGES_DIR, "import_temp.zip")
+        await file.download_to_drive(zip_path)
+        
+        if restore_from_zip(zip_path):
+            await update.message.reply_text("✅ **数据导入成功！**\n\nBot 将在下次重启后使用新数据。")
+        else:
+            await update.message.reply_text("❌ 导入失败，请检查文件是否正确。")
+        
+        os.remove(zip_path)
+    except Exception as e:
+        await update.message.reply_text(f"❌ 导入失败: {str(e)}")
+
+# ==================== 定时备份 ====================
+from apscheduler.schedulers.background import BackgroundScheduler
+
+def schedule_backup():
+    if BACKUP_INTERVAL_HOURS > 0:
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(backup_now, 'interval', hours=BACKUP_INTERVAL_HOURS)
+        scheduler.start()
+        logger.info(f"定时备份已启动：每 {BACKUP_INTERVAL_HOURS} 小时")
 
 # ==================== 主程序 ====================
 def main():
-    os.makedirs(IMAGES_DIR, exist_ok=True)
-    os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
-    
+    # 初始化数据库
     init_db()
     
+    # 启动 Flask Web 服务器（后台线程）
     def run_flask():
-        from flask import Flask, send_from_directory
-        flask_app = Flask(__name__)
-        @flask_app.route("/")
-        def index():
-            return "✅ Telegram 个人工具箱 - 图床服务运行中"
-        @flask_app.route("/images/<path:filename>")
-        def serve_image(filename):
-            return send_from_directory(IMAGES_DIR, filename)
         flask_app.run(host="0.0.0.0", port=8080, debug=False, use_reloader=False)
     
-    Thread(target=run_flask, daemon=True).start()
-
-    request = HTTPXRequest(
-        connect_timeout=30.0,
-        read_timeout=30.0,
-        write_timeout=30.0,
-        pool_timeout=30.0,
-    )
-
-    application = Application.builder().token(TELEGRAM_TOKEN).request(request).build()
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info("Flask Web 服务器已启动在端口 8080")
     
+    # 启动定时备份
+    schedule_backup()
+    
+    # 创建 Bot Application
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # 命令处理器
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("del_note", delete_note_command))
-    application.add_handler(CommandHandler("del_bookmark", delete_bookmark_command))
+    application.add_handler(CommandHandler("images", list_images))
+    application.add_handler(CommandHandler("notes", list_notes))
+    application.add_handler(CommandHandler("bookmarks", list_bookmarks))
+    application.add_handler(CommandHandler("backup", do_backup))
+    application.add_handler(CommandHandler("export", export_data))
+    
+    # 照片处理器
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    # 文档导入处理器
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_import))
+    
+    # 记事本 ConversationHandler
+    note_conv = ConversationHandler(
+        entry_points=[CommandHandler("addnote", add_note_start)],
+        states={
+            ADD_NOTE_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_note_title)],
+            ADD_NOTE_CONTENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_note_content)],
+        },
+        fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
+    )
+    application.add_handler(note_conv)
+    
+    # 收藏夹 ConversationHandler
+    bookmark_conv = ConversationHandler(
+        entry_points=[CommandHandler("addbookmark", add_bookmark_start)],
+        states={
+            ADD_BOOKMARK_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_bookmark_url)],
+            ADD_BOOKMARK_REMARK: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_bookmark_remark)],
+        },
+        fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
+    )
+    application.add_handler(bookmark_conv)
+    
+    # 按钮回调
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("🚀 Bot 已启动（v3.0 完整版）")
-    application.run_polling()
+    # 启动 Bot（轮询模式）
+    logger.info("Bot 启动中...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
