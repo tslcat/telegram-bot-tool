@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram 个人工具箱 Bot - 最终稳定版
+Telegram 个人工具箱 Bot - 完整稳定版
 功能：图床（多格式）、记事本、WebDAV 备份
 """
 
@@ -40,10 +40,8 @@ ADD_NOTE_TITLE, ADD_NOTE_CONTENT = range(2)
 # ==================== 全局错误处理 ====================
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
-
     if isinstance(context.error, TimedOut):
         logger.warning("Telegram API 请求超时，已忽略")
-        return
 
 
 async def check_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -90,6 +88,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_backup_menu(query)
     elif data == "delete_notes_menu":
         await show_delete_notes_menu(query)
+    elif data == "add_note":
+        await query.message.reply_text("📝 请使用命令 `/addnote` 开始添加新记事本")
+    elif data == "list_notes":
+        await list_notes_from_query(query)
     elif data.startswith("note_"):
         await handle_note_action(query, data)
     elif data == "back_main":
@@ -251,6 +253,19 @@ async def handle_note_action(query, data):
         await query.edit_message_text(f"✅ 已删除记事 #{note_id}")
 
 
+async def list_notes_from_query(query):
+    notes = get_all_notes()
+    if not notes:
+        await query.edit_message_text("📭 还没有任何记事")
+        return
+
+    text = "📝 **所有记事本**：\n\n"
+    for note in notes:
+        text += f"**#{note['id']}** {note['title']}\n"
+
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
 # ==================== 备份功能 ====================
 async def show_backup_menu(query):
     keyboard = [
@@ -337,10 +352,8 @@ def main():
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # 全局错误处理
     application.add_error_handler(error_handler)
 
-    # 注册处理器
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("notes", list_notes))
     application.add_handler(CommandHandler("backup", do_backup))
