@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram 个人工具箱 Bot - 优化版
+Telegram 个人工具箱 Bot - 最终优化版
 支持：图床（多格式）、记事本、WebDAV 备份
 """
 
@@ -39,22 +39,11 @@ ADD_NOTE_TITLE, ADD_NOTE_CONTENT = range(2)
 
 # ==================== 全局错误处理 ====================
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """全局错误处理器，防止 Bot 因单次请求崩溃"""
     logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
 
     if isinstance(context.error, TimedOut):
         logger.warning("Telegram API 请求超时，已忽略")
         return
-
-    # 可选：通知主人
-    try:
-        if update and hasattr(update, "effective_user"):
-            await context.bot.send_message(
-                chat_id=OWNER_CHAT_ID,
-                text=f"⚠️ Bot 发生错误：{str(context.error)[:150]}"
-            )
-    except Exception:
-        pass
 
 
 async def check_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -86,7 +75,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await query.answer()
     except Exception:
-        pass  # 防止 answer 超时导致崩溃
+        pass
 
     if query.from_user.id != OWNER_CHAT_ID:
         return
@@ -179,6 +168,7 @@ async def list_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== 记事本功能 ====================
 async def show_notes_menu(query):
     notes = get_all_notes()
+
     keyboard = [
         [InlineKeyboardButton("➕ 添加新记事", callback_data="add_note")],
         [InlineKeyboardButton("📋 查看所有记事", callback_data="list_notes")],
@@ -347,7 +337,7 @@ def main():
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # 注册全局错误处理器
+    # 全局错误处理
     application.add_error_handler(error_handler)
 
     # 注册处理器
@@ -367,6 +357,7 @@ def main():
         fallbacks=[],
     )
     application.add_handler(note_conv)
+
     application.add_handler(CallbackQueryHandler(button_handler))
 
     logger.info("Bot 启动中...")
@@ -374,10 +365,10 @@ def main():
     # 优化后的 polling 配置
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,   # 丢弃启动时积压的更新
+        drop_pending_updates=True,
         poll_interval=1.0,
         timeout=20,
-        read_timeout=30,
+        close_loop=False
     )
 
 
