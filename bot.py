@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Telegram 个人工具箱 Bot - 最终优化版
-支持：图床（多格式）、记事本、WebDAV 备份
+Telegram 个人工具箱 Bot - 最终稳定版
+功能：图床（多格式）、记事本、WebDAV 备份
 """
 
 import logging
@@ -362,7 +362,6 @@ def main():
 
     logger.info("Bot 启动中...")
 
-    # 优化后的 polling 配置
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
