@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram 个人工具箱 Bot - 完整稳定版
+Telegram 个人工具箱 Bot - 最终稳定版
 功能：图床（多格式）、记事本、WebDAV 备份
 """
 
@@ -89,7 +89,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "delete_notes_menu":
         await show_delete_notes_menu(query)
     elif data == "add_note":
-        await query.message.reply_text("📝 请使用命令 `/addnote` 开始添加新记事本")
+        context.user_data['adding_note'] = True
+        await query.message.reply_text("📝 请输入记事内容（直接输入正文即可，无需标题）：")
     elif data == "list_notes":
         await list_notes_from_query(query)
     elif data.startswith("note_"):
@@ -224,10 +225,17 @@ async def list_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text += "💡 输入 `0` 进入删除模式，然后输入序号删除"
 
-    keyboard = [[InlineKeyboardButton("🗑️ 批量删除", callback_data="delete_notes_menu")]]
-    keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_notes")])
-
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    keyboard = [
+        [InlineKeyboardButton("🗑️ 批量删除 (序号选择)", callback_data="delete_notes_menu")],
+        [InlineKeyboardButton("🔙 返回记事本菜单", callback_data="menu_notes")],
+        [InlineKeyboardButton("🏠 返回主菜单", callback_data="back_main")]
+    ]
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 
 async def show_delete_notes_menu(query):
@@ -264,6 +272,21 @@ async def list_notes_from_query(query):
         text += f"**#{note['id']}** {note['title']}\n"
 
     await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理添加记事本的文本输入（按钮直接添加模式，无需标题）"""
+    if context.user_data.get('adding_note'):
+        content = update.message.text.strip()
+        if not content:
+            await update.message.reply_text("内容不能为空，请重新输入：")
+            return
+        
+        note_id = add_note("记事", content)
+        await update.message.reply_text(f"✅ 添加成功！ID: {note_id}")
+        context.user_data.clear()
+        await list_notes(update, context)  # 添加成功后自动返回记事本列表
+        return
 
 
 # ==================== 备份功能 ====================
@@ -359,6 +382,7 @@ def main():
     application.add_handler(CommandHandler("backup", do_backup))
     application.add_handler(CommandHandler("export", export_data))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_import))
 
     note_conv = ConversationHandler(
