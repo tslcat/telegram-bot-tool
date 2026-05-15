@@ -5,10 +5,35 @@ services:
     build: .
     container_name: telegram-bot-tool
     restart: unless-stopped
+
+    # ==================== 环境变量配置说明 ====================
+    # 所有配置请在 .env 文件中填写（推荐方式）
+    # 或者取消下面 environment 的注释，直接在这里填写
     env_file:
       - .env
-    volumes:
-      - ./data:/app/data          # 持久化数据库和备份文件
-    # 如果你想自定义时区，可以取消下面注释
+
+    # 如果你不想使用 .env 文件，可以直接在这里填写（不推荐用于生产）
     # environment:
-    #   - TZ=Asia/Shanghai
+    #   BOT_TOKEN: "你的BotToken"
+    #   SMMS_TOKEN: "你的sm.ms图床Token（可选）"
+    #   WEBDAV_URL: "https://dav.example.com/backup/"
+    #   WEBDAV_USERNAME: "你的WebDAV用户名"
+    #   WEBDAV_PASSWORD: "你的WebDAV密码"
+    #   TZ: "Asia/Shanghai"
+
+    volumes:
+      - ./data:/app/data          # 持久化数据库（笔记 + 图床记录 + 备份文件）
+
+# ==================== 需要在 .env 中配置的变量说明 ====================
+# BOT_TOKEN          → 必须：从 @BotFather 获取的 Bot Token
+# SMMS_TOKEN         → 可选：sm.ms 图床 API Token（用于 /tool2 图床功能）
+# WEBDAV_URL         → 可选：WebDAV 地址（用于 /tool3 备份功能），末尾带 /
+# WEBDAV_USERNAME    → 可选：WebDAV 用户名
+# WEBDAV_PASSWORD    → 可选：WebDAV 密码
+#
+# 示例 .env 内容：
+# BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+# SMMS_TOKEN=xxxxxxxxxxxx
+# WEBDAV_URL=https://dav.jianguoyun.com/dav/backup/
+# WEBDAV_USERNAME=你的邮箱
+# WEBDAV_PASSWORD=你的应用密码

@@ -12,6 +12,7 @@ router = Router(name="tool2")
 
 SMMS_TOKEN = os.getenv("SMMS_TOKEN")
 SMMS_UPLOAD_URL = "https://sm.ms/api/v2/upload"
+TELEGRAPH_UPLOAD_URL = "https://telegra.ph/upload"
 
 class ImageBedStates(StatesGroup):
     choosing_action = State()
@@ -22,7 +23,7 @@ async def show_imagebed_menu(target: Message | CallbackQuery, state: FSMContext)
         [InlineKeyboardButton(text="➕ 添加图片", callback_data="imgbed_add")],
         [InlineKeyboardButton(text="🔙 返回主菜单", callback_data="imgbed_back")]
     ])
-    text = "🖼️ <b>图床菜单</b>\n请选择操作："
+    text = "🖼️ <b>图床菜单</b>\n（有 SMMS Token 用 sm.ms，否则自动使用 Telegraph）\n请选择操作："
     
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=keyboard)
@@ -38,7 +39,11 @@ async def enter_imagebed(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "imgbed_add", StateFilter(ImageBedStates.choosing_action))
 async def add_image_start(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("📤 请直接发送图片（照片或文件）")
+    await callback.message.edit_text(
+        "📤 请直接发送图片（照片或文件）\n\n"
+        "• 有 SMMS_TOKEN → 使用 sm.ms（推荐）\n"
+        "• 无 Token → 自动使用 Telegraph（免费）"
+    )
     await state.set_state(ImageBedStates.waiting_for_image)
     await callback.answer()
 
@@ -65,37 +70,51 @@ async def handle_image_upload(message: Message, state: FSMContext, bot: Bot):
 
     await message.answer("⏳ 正在上传到图床...")
 
-    headers = {}
-    if SMMS_TOKEN:
-        headers["Authorization"] = f"Bearer {SMMS_TOKEN}"
-
-    form = aiohttp.FormData()
-    form.add_field("smfile", file_bytes, filename=filename, content_type="image/jpeg")
-
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(SMMS_UPLOAD_URL, data=form, headers=headers) as resp:
-                result = await resp.json()
+        if SMMS_TOKEN:
+            # 使用 sm.ms（有 Token 时，质量更好）
+            headers = {"Authorization": f"Bearer {SMMS_TOKEN}"}
+            form = aiohttp.FormData()
+            form.add_field("smfile", file_bytes, filename=filename, content_type="image/jpeg")
 
-        if result.get("success"):
-            data = result.get("data", {})
-            url = data.get("url", "")
-            
-            # 保存记录到数据库
-            await add_image_record(message.from_user.id, url, filename)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(SMMS_UPLOAD_URL, data=form, headers=headers) as resp:
+                    result = await resp.json()
 
-            text = (
-                "✅ <b>上传成功！</b>\n\n"
-                f"**直链 (URL)**:\n`{url}`\n\n"
-                f"**HTML**:\n`<img src=\"{url}\" />`\n\n"
-                f"**BBCode**:\n`[img]{url}[/img]`\n\n"
-                f"**Markdown**:\n`![图片]({url})`"
-            )
-            await message.answer(text, parse_mode="Markdown")
+            if result.get("success"):
+                data = result.get("data", {})
+                url = data.get("url", "")
+            else:
+                raise Exception(result.get("message", "sm.ms 上传失败"))
         else:
-            await message.answer(f"❌ 上传失败：{result.get('message', '未知错误')}")
+            # 无 Token 时使用 Telegraph（完全免费，无需注册）
+            form = aiohttp.FormData()
+            form.add_field("file", file_bytes, filename=filename)
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(TELEGRAPH_UPLOAD_URL, data=form) as resp:
+                    result = await resp.json()
+
+            if isinstance(result, list) and result:
+                src = result[0].get("src", "")
+                url = f"https://telegra.ph{src}"
+            else:
+                raise Exception("Telegraph 上传失败")
+
+        # 保存记录到数据库
+        await add_image_record(message.from_user.id, url, filename)
+
+        text = (
+            "✅ <b>上传成功！</b>\n\n"
+            f"**直链 (URL)**:\n`{url}`\n\n"
+            f"**HTML**:\n`<img src=\"{url}\" />`\n\n"
+            f"**BBCode**:\n`[img]{url}[/img]`\n\n"
+            f"**Markdown**:\n`![图片]({url})`"
+        )
+        await message.answer(text, parse_mode="Markdown")
+
     except Exception as e:
-        await message.answer(f"❌ 上传出错：{e}")
+        await message.answer(f"❌ 上传失败：{e}")
 
     await show_imagebed_menu(message, state)
 

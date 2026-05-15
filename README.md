@@ -15,7 +15,8 @@
 ### 1. 获取必要信息
 
 - **Bot Token**：[@BotFather](https://t.me/BotFather)
-- **图床 Token**（可选但推荐）：[sm.ms API Token](https://sm.ms/)
+- **图床 Token**（可选）：[sm.ms API Token](https://sm.ms/)  
+  → 不填写也完全可用，系统会自动使用 Telegraph 图床（免费、无需任何注册）
 - **WebDAV**（备份功能需要）：坚果云、Alist、Nextcloud 等
 
 ### 2. 使用 Docker Compose 部署（推荐）
