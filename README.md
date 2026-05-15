@@ -1,209 +1,91 @@
-# Telegram 个人工具箱（记事本、图床、收藏夹） Bot
+# Telegram Bot Tool
 
-一个功能强大的 Telegram Bot，支持图床、记事本、网络收藏夹，并支持 WebDAV 自动备份和导入导出。完全 Docker 化，支持 GitHub Actions 自动构建并推送到 Docker Hub。
+一个模块化、可维护的 Telegram 多工具机器人（支持 Docker 一键部署）
 
-## ✨ 功能特性
+## ✨ 功能列表
 
-1. **📷 图床功能**  
-   - 直接在 Telegram 发送图片给 Bot，自动保存并返回可通过域名访问的公开链接  
-   - 支持自定义域名（需反向代理配置）  
-   - 图片保存在本地 `data/images/` 目录
+| 命令     | 功能           | 说明                              |
+|----------|----------------|-----------------------------------|
+| `/tool1` | 笔记本功能     | 添加笔记、查看笔记、按序号删除    |
+| `/tool2` | 图床功能       | 上传图片 → 获取 URL / HTML / BBCode / Markdown 链接 |
+| `/tool3` | 备份功能       | 导出/导入 JSON + 一键 WebDAV 备份 |
 
-2. **📝 记事本功能**  
-   - 添加、修改、删除、查看记事本  
-   - 支持标题和内容  
-   - 通过内联键盘方便管理
+## 🚀 快速开始
 
-3. **🔖 网络收藏夹**  
-   - 添加、修改、删除收藏夹  
-   - 支持 URL + 备注说明  
-   - 方便分类管理
+### 1. 获取必要信息
 
-4. **☁️ 数据备份与恢复**  
-   - 支持 WebDAV 自动/手动备份（数据库 + 图片打包）  
-   - 支持导入导出（上传 zip 文件恢复）  
-   - 可设置定时自动备份
+- **Bot Token**：[@BotFather](https://t.me/BotFather)
+- **图床 Token**（可选但推荐）：[sm.ms API Token](https://sm.ms/)
+- **WebDAV**（备份功能需要）：坚果云、Alist、Nextcloud 等
 
-## 🚀 快速部署（推荐 Docker）
-
-### 1. 获取代码
+### 2. 使用 Docker Compose 部署（推荐）
 
 ```bash
+# 1. 克隆或下载项目
 git clone https://github.com/你的用户名/telegram-bot-tool.git
 cd telegram-bot-tool
-```
 
-### 2. 配置环境变量
-
-复制 `.env.example` 为 `.env` 并修改：
-
-```bash
+# 2. 配置环境变量
 cp .env.example .env
+nano .env          # 填入 BOT_TOKEN（必须），SMMS_TOKEN 和 WebDAV 配置（可选）
+
+# 3. 启动
+docker compose up -d --build
+
+# 查看日志
+docker compose logs -f
 ```
 
-编辑 `.env`：
-
-```env
-# Telegram Bot Token (从 @BotFather 获取)
-TELEGRAM_TOKEN=你的bot_token
-
-# 你的 Telegram Chat ID (发送 /start 给 @userinfobot 获取)
-OWNER_CHAT_ID=你的chat_id
-
-# 公开访问域名（必须配置，否则图床链接无效）
-PUBLIC_BASE_URL=https://yourdomain.com
-
-# Web 服务器端口（Docker 内部）
-WEB_PORT=8080
-
-# WebDAV 配置（用于备份，可选）
-WEBDAV_URL=https://your-webdav-server.com/remote.php/dav/files/username/
-WEBDAV_USERNAME=你的webdav用户名
-WEBDAV_PASSWORD=你的webdav密码
-
-# 自动备份间隔（小时，0 表示关闭）
-BACKUP_INTERVAL_HOURS=24
-```
-
-### 3. 使用 Docker 运行
+### 3. 本地运行
 
 ```bash
-docker-compose up -d
-```
-
-首次运行会自动创建 `data/` 目录和数据库。
-
-访问 `http://你的服务器IP:8080/images/` 可查看图片（需配置域名反向代理到 8080 端口）。
-
-### 4. 配置域名反向代理（推荐 Nginx + Cloudflare / Let's Encrypt）
-
-示例 Nginx 配置：
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name yourdomain.com;
-
-    location /images/ {
-        proxy_pass http://localhost:8080/images/;
-        proxy_set_header Host $host;
-    }
-
-    # 可选：添加其他路由保护
-}
-```
-
-确保 `PUBLIC_BASE_URL=https://yourdomain.com`
-
-## 📋 Bot 使用命令
-
-发送 `/start` 给你的 Bot 打开主菜单。
-
-### 图床
-- 直接**发送图片**给 Bot → 自动保存并回复公开链接
-- `/images` 查看最近上传的图片列表
-
-### 记事本
-- `/addnote` → 按提示输入标题和内容
-- `/notes` → 查看所有记事本（支持编辑/删除按钮）
-- `/delnote <ID>` 快速删除
-
-### 收藏夹
-- `/addbookmark <URL> [备注]` 
-- `/bookmarks` → 查看所有收藏（支持编辑/删除）
-- `/delbookmark <ID>`
-
-### 备份管理
-- `/backup` → 立即执行 WebDAV 备份
-- `/export` → 导出当前数据为 zip 文件（通过 Telegram 发送）
-- 上传 zip 文件给 Bot → 自动导入恢复数据
-
-## 🛠️ 开发与 GitHub 自动构建
-
-### 本地开发
-
-```bash
-python -m venv venv
-source venv/bin/activate
 pip install -r requirements.txt
-python bot.py
-```
-
-### GitHub Actions 自动构建 Docker 镜像
-
-项目已配置 `.github/workflows/docker-publish.yml`
-
-**首次设置：**
-
-1. 在 GitHub 仓库 Settings → Secrets and variables → Actions 添加：
-   - `DOCKERHUB_USERNAME`：你的 Docker Hub 用户名
-   - `DOCKERHUB_TOKEN`：Docker Hub Access Token（在 Docker Hub → Account Settings → Security 创建）
-
-2. 推送代码到 `main` 分支，Actions 会自动：
-   - 构建 Docker 镜像
-   - 推送到 `你的DockerHub用户名/telegram-bot-tool:latest`
-
-### Docker Hub 镜像
-
-镜像地址：`你的用户名/telegram-bot-tool`
-
-运行示例：
-
-```bash
-docker run -d \
-  --name telegram-bot \
-  -p 8080:8080 \
-  -v $(pwd)/data:/app/data \
-  --env-file .env \
-  你的用户名/telegram-bot-tool
+cp .env.example .env
+# 编辑 .env 填入配置
+python -m bot.main
 ```
 
 ## 📁 项目结构
 
 ```
 telegram-bot-tool/
-├── bot.py                 # 主程序入口 + Bot 逻辑
-├── web.py                 # Flask Web 服务器（图床图片服务）
-├── database.py            # SQLite 数据库操作
-├── webdav_backup.py       # WebDAV 备份/恢复逻辑
-├── config.py              # 配置加载
-├── requirements.txt
+├── bot/
+│   ├── handlers/
+│   │   ├── common.py      # /start /help
+│   │   ├── tool1.py       # 笔记本
+│   │   ├── tool2.py       # 图床
+│   │   └── tool3.py       # 备份
+│   ├── database.py
+│   ├── config.py
+│   └── main.py
+├── data/                  # 持久化数据库（自动创建）
 ├── Dockerfile
 ├── docker-compose.yml
+├── requirements.txt
 ├── .env.example
-├── .github/workflows/
-│   └── docker-publish.yml
-├── data/                  # 数据目录（自动创建）
-│   ├── bot.db
-│   └── images/
 └── README.md
 ```
 
-## 🔒 安全建议
+## 🔧 配置说明（.env）
 
-- 仅允许 `OWNER_CHAT_ID` 使用 Bot（已实现）
-- 生产环境建议使用 HTTPS + 域名
-- WebDAV 密码请妥善保管
-- 定期备份重要数据
+```env
+BOT_TOKEN=xxxxxxxxxx
 
-## ❓ 常见问题
+# 图床（sm.ms）
+SMMS_TOKEN=xxxxxxxxxx
 
-**Q: 图床链接打不开？**  
-A: 检查 `PUBLIC_BASE_URL` 是否正确配置，并确保域名已正确反向代理到容器的 8080 端口。
+# WebDAV 备份
+WEBDAV_URL=https://dav.example.com/backup/
+WEBDAV_USERNAME=xxx
+WEBDAV_PASSWORD=xxx
+```
 
-**Q: 如何修改 Bot 命令？**  
-A: 编辑 `bot.py` 中的命令处理器。
+## 📦 备份功能说明
 
-**Q: 支持多用户吗？**  
-A: 当前为单用户设计（通过 OWNER_CHAT_ID 限制）。如需多用户可扩展权限系统。
-
-**Q: 图片存储位置？**  
-A: Docker 卷 `data/images/`，可随时迁移。
-
-## 📄 License
-
-MIT License
+- **导出文件**：导出所有笔记 + 图床记录为 JSON
+- **导入文件**：上传 JSON 恢复数据
+- **立即备份**：一键上传备份文件到你的 WebDAV
 
 ---
 
-**享受你的个人 Telegram 工具箱！** 如有问题欢迎提 Issue 或 PR。
+**项目已全部完成**，三个工具全部可用，直接上传 GitHub 即可使用！
