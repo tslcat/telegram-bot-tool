@@ -32,7 +32,8 @@ async def cmd_start(message: Message, state: FSMContext):
     await message.answer(
         "👋 欢迎使用 <b>Telegram Bot Tool</b>！\n\n"
         "主菜单已固定在底部，点击按钮即可使用对应功能。",
-        reply_markup=main_menu
+        reply_markup=main_menu,
+        parse_mode="HTML"
     )
 
 @router.message(Command("help"))
@@ -42,7 +43,8 @@ async def cmd_help(message: Message):
         "• <b>/tool1</b> - 笔记本功能\n"
         "• <b>/tool2</b> - 图床功能（需配置 SMMS_TOKEN）\n"
         "• <b>/tool3</b> - 备份功能（需配置 WebDAV）\n\n"
-        "每个工具都有独立的菜单，操作简单直观。"
+        "每个工具都有独立的菜单，操作简单直观。",
+        parse_mode="HTML"
     )
 
 # ==================== 底部主菜单按钮处理 ====================

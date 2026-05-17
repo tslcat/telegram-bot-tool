@@ -3,6 +3,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+import html
 
 from bot.database import add_note, get_user_notes, delete_note_by_id
 
@@ -22,10 +23,10 @@ async def show_notebook_menu(target: Message | CallbackQuery, state: FSMContext)
     text = "📓 <b>笔记本菜单</b>\n请选择操作："
     
     if isinstance(target, CallbackQuery):
-        await target.message.edit_text(text, reply_markup=keyboard)
+        await target.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         await target.answer()
     else:
-        await target.answer(text, reply_markup=keyboard)
+        await target.answer(text, reply_markup=keyboard, parse_mode="HTML")
     await state.set_state(NoteStates.choosing_action)
 
 @router.message(Command("tool1"))
@@ -47,7 +48,7 @@ async def save_new_note(message: Message, state: FSMContext):
         return
     try:
         await add_note(message.from_user.id, content)
-        await message.answer("✅ <b>笔记保存成功！</b>")
+        await message.answer("✅ <b>笔记保存成功！</b>", parse_mode="HTML")
     except Exception as e:
         await message.answer(f"❌ 保存失败：{e}")
     await show_notebook_menu(message, state)
@@ -63,12 +64,13 @@ async def view_notes(callback: CallbackQuery, state: FSMContext):
 
     text = "📋 <b>你的所有笔记</b>（按时间倒序）\n\n"
     for idx, note in enumerate(notes, 1):
-        text += f"<b>{idx}.</b> [{note['created_at']}]\n{note['content']}\n\n"
+        safe_content = html.escape(note['content'])
+        text += f"<b>{idx}.</b> [{note['created_at']}]\n{safe_content}\n\n"
 
     text += "━━━━━━━━━━━━━━\n"
     text += "💡 直接回复 <b>序号</b> 删除对应笔记\n回复 <b>0</b> 返回菜单"
 
-    await callback.message.edit_text(text)
+    await callback.message.edit_text(text, parse_mode="HTML")
     await state.update_data(notes_list=notes)
     await state.set_state(NoteStates.waiting_delete_number)
     await callback.answer()
@@ -102,5 +104,5 @@ async def handle_delete_input(message: Message, state: FSMContext):
 @router.callback_query(F.data == "note_back")
 async def back_to_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("🔙 已返回主菜单\n使用 /tool1 再次进入笔记本")
+    await callback.message.edit_text("🔙 已返回主菜单\n使用 /tool1 再次进入笔记本", parse_mode="HTML")
     await callback.answer()

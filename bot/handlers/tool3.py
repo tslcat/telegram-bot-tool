@@ -34,10 +34,10 @@ async def show_backup_menu(target: Message | CallbackQuery, state: FSMContext):
     text = "🗄️ <b>备份菜单</b>\n请选择操作："
     
     if isinstance(target, CallbackQuery):
-        await target.message.edit_text(text, reply_markup=keyboard)
+        await target.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         await target.answer()
     else:
-        await target.answer(text, reply_markup=keyboard)
+        await target.answer(text, reply_markup=keyboard, parse_mode="HTML")
     await state.set_state(BackupStates.choosing_action)
 
 @router.message(Command("tool3"))

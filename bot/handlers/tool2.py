@@ -26,10 +26,10 @@ async def show_imagebed_menu(target: Message | CallbackQuery, state: FSMContext)
     text = "🖼️ <b>图床菜单</b>\n（有 SMMS Token 用 sm.ms，否则自动使用 Telegraph）\n请选择操作："
     
     if isinstance(target, CallbackQuery):
-        await target.message.edit_text(text, reply_markup=keyboard)
+        await target.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         await target.answer()
     else:
-        await target.answer(text, reply_markup=keyboard)
+        await target.answer(text, reply_markup=keyboard, parse_mode="HTML")
     await state.set_state(ImageBedStates.choosing_action)
 
 @router.message(Command("tool2"))
@@ -72,7 +72,6 @@ async def handle_image_upload(message: Message, state: FSMContext, bot: Bot):
 
     try:
         if SMMS_TOKEN:
-            # 使用 sm.ms（有 Token 时，质量更好）
             headers = {"Authorization": f"Bearer {SMMS_TOKEN}"}
             form = aiohttp.FormData()
             form.add_field("smfile", file_bytes, filename=filename, content_type="image/jpeg")
@@ -87,7 +86,6 @@ async def handle_image_upload(message: Message, state: FSMContext, bot: Bot):
             else:
                 raise Exception(result.get("message", "sm.ms 上传失败"))
         else:
-            # 无 Token 时使用 Telegraph（完全免费，无需注册）
             form = aiohttp.FormData()
             form.add_field("file", file_bytes, filename=filename)
 
@@ -101,17 +99,16 @@ async def handle_image_upload(message: Message, state: FSMContext, bot: Bot):
             else:
                 raise Exception("Telegraph 上传失败")
 
-        # 保存记录到数据库
         await add_image_record(message.from_user.id, url, filename)
 
         text = (
             "✅ <b>上传成功！</b>\n\n"
-            f"**直链 (URL)**:\n`{url}`\n\n"
-            f"**HTML**:\n`<img src=\"{url}\" />`\n\n"
-            f"**BBCode**:\n`[img]{url}[/img]`\n\n"
-            f"**Markdown**:\n`![图片]({url})`"
+            f"<b>直链 (URL)</b>:\n<code>{url}</code>\n\n"
+            f"<b>HTML</b>:\n<code>&lt;img src=\"{url}\" /&gt;</code>\n\n"
+            f"<b>BBCode</b>:\n<code>[img]{url}[/img]</code>\n\n"
+            f"<b>Markdown</b>:\n<code>![图片]({url})</code>"
         )
-        await message.answer(text, parse_mode="Markdown")
+        await message.answer(text, parse_mode="HTML")
 
     except Exception as e:
         await message.answer(f"❌ 上传失败：{e}")
@@ -121,5 +118,5 @@ async def handle_image_upload(message: Message, state: FSMContext, bot: Bot):
 @router.callback_query(F.data == "imgbed_back")
 async def back_to_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("🔙 已返回主菜单\n使用 /tool2 再次进入图床")
+    await callback.message.edit_text("🔙 已返回主菜单\n使用 /tool2 再次进入图床", parse_mode="HTML")
     await callback.answer()
