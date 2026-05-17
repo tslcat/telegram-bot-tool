@@ -15,11 +15,12 @@ services:
     # 如果你不想使用 .env 文件，可以直接在这里填写（不推荐用于生产）
     # environment:
     #   BOT_TOKEN: "你的BotToken"
-    #   SMMS_TOKEN: "你的sm.ms图床Token（可选）"
+    #   IMAGE_DOMAIN: ""                             # 你的图片访问域名（末尾不要带 /)如https://img.yourdomain.com/images
     #   WEBDAV_URL: "https://dav.example.com/backup/"
     #   WEBDAV_USERNAME: "你的WebDAV用户名"
     #   WEBDAV_PASSWORD: "你的WebDAV密码"
     #   TZ: "Asia/Shanghai"
+    
 
     volumes:
       - ./data:/app/data          # 持久化数据库（笔记 + 图床记录 + 备份文件）

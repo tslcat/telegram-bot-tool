@@ -1,29 +1,32 @@
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-import aiohttp
 import os
+import uuid
+from datetime import datetime
 
 from bot.database import add_image_record
 
 router = Router(name="tool2")
 
-SMMS_TOKEN = os.getenv("SMMS_TOKEN")
-SMMS_UPLOAD_URL = "https://sm.ms/api/v2/upload"
-TELEGRAPH_UPLOAD_URL = "https://telegra.ph/upload"
+# 用户配置的图片访问域名（例如：https://img.yourdomain.com/images）
+# 如果不配置，则回退到 Telegram 直链
+IMAGE_DOMAIN = os.getenv("IMAGE_DOMAIN", "").rstrip("/")
+
 
 class ImageBedStates(StatesGroup):
     choosing_action = State()
     waiting_for_image = State()
+
 
 async def show_imagebed_menu(target: Message | CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ 添加图片", callback_data="imgbed_add")],
         [InlineKeyboardButton(text="🔙 返回主菜单", callback_data="imgbed_back")]
     ])
-    text = "🖼️ <b>图床菜单</b>\n（有 SMMS Token 用 sm.ms，否则自动使用 Telegraph）\n请选择操作："
+    text = "🖼️ <b>图床菜单</b>\n（支持配置自己的域名生成链接）\n请选择操作："
     
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
@@ -32,20 +35,23 @@ async def show_imagebed_menu(target: Message | CallbackQuery, state: FSMContext)
         await target.answer(text, reply_markup=keyboard, parse_mode="HTML")
     await state.set_state(ImageBedStates.choosing_action)
 
+
 @router.message(Command("tool2"))
 async def enter_imagebed(message: Message, state: FSMContext):
     await state.clear()
     await show_imagebed_menu(message, state)
 
+
 @router.callback_query(F.data == "imgbed_add", StateFilter(ImageBedStates.choosing_action))
 async def add_image_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "📤 请直接发送图片（照片或文件）\n\n"
-        "• 有 SMMS_TOKEN → 使用 sm.ms（推荐）\n"
-        "• 无 Token → 自动使用 Telegraph（免费）"
+        "• 已配置 IMAGE_DOMAIN → 使用你的域名生成链接\n"
+        "• 未配置 → 回退使用 Telegram 直链"
     )
     await state.set_state(ImageBedStates.waiting_for_image)
     await callback.answer()
+
 
 @router.message(StateFilter(ImageBedStates.waiting_for_image), F.photo | F.document)
 async def handle_image_upload(message: Message, state: FSMContext, bot: Bot):
@@ -68,41 +74,40 @@ async def handle_image_upload(message: Message, state: FSMContext, bot: Bot):
         await show_imagebed_menu(message, state)
         return
 
-    await message.answer("⏳ 正在上传到图床...")
+    await message.answer("⏳ 正在处理图片...")
 
     try:
-        if SMMS_TOKEN:
-            headers = {"Authorization": f"Bearer {SMMS_TOKEN}"}
-            form = aiohttp.FormData()
-            form.add_field("smfile", file_bytes, filename=filename, content_type="image/jpeg")
+        # 创建图片存储目录
+        os.makedirs("data/images", exist_ok=True)
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(SMMS_UPLOAD_URL, data=form, headers=headers) as resp:
-                    result = await resp.json()
+        # 生成唯一文件名
+        ext = os.path.splitext(filename)[1] or ".jpg"
+        new_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{ext}"
+        save_path = os.path.join("data/images", new_filename)
 
-            if result.get("success"):
-                data = result.get("data", {})
-                url = data.get("url", "")
-            else:
-                raise Exception(result.get("message", "sm.ms 上传失败"))
+        # 保存图片到本地
+        with open(save_path, "wb") as f:
+            f.write(file_bytes)
+
+        # 根据是否配置了 IMAGE_DOMAIN 生成链接
+        if IMAGE_DOMAIN:
+            url = f"{IMAGE_DOMAIN}/{new_filename}"
+            storage_info = "使用你配置的域名"
         else:
-            form = aiohttp.FormData()
-            form.add_field("file", file_bytes, filename=filename)
+            # 没有配置域名时，回退到 Telegram 直链
+            sent_message = await bot.send_photo(
+                chat_id=message.chat.id,
+                photo=BufferedInputFile(file_bytes, filename=filename),
+            )
+            new_file = await bot.get_file(sent_message.photo[-1].file_id)
+            url = f"https://api.telegram.org/file/bot{bot.token}/{new_file.file_path}"
+            storage_info = "使用 Telegram 存储（未配置 IMAGE_DOMAIN）"
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(TELEGRAPH_UPLOAD_URL, data=form) as resp:
-                    result = await resp.json()
-
-            if isinstance(result, list) and result:
-                src = result[0].get("src", "")
-                url = f"https://telegra.ph{src}"
-            else:
-                raise Exception("Telegraph 上传失败")
-
-        await add_image_record(message.from_user.id, url, filename)
+        # 保存记录到数据库
+        await add_image_record(message.from_user.id, url, new_filename)
 
         text = (
-            "✅ <b>上传成功！</b>\n\n"
+            f"✅ <b>上传成功！</b>（{storage_info}）\n\n"
             f"<b>直链 (URL)</b>:\n<code>{url}</code>\n\n"
             f"<b>HTML</b>:\n<code>&lt;img src=\"{url}\" /&gt;</code>\n\n"
             f"<b>BBCode</b>:\n<code>[img]{url}[/img]</code>\n\n"
@@ -114,6 +119,7 @@ async def handle_image_upload(message: Message, state: FSMContext, bot: Bot):
         await message.answer(f"❌ 上传失败：{e}")
 
     await show_imagebed_menu(message, state)
+
 
 @router.callback_query(F.data == "imgbed_back")
 async def back_to_main(callback: CallbackQuery, state: FSMContext):
