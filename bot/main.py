@@ -11,6 +11,7 @@ from bot.handlers.common import router as common_router
 from bot.handlers.tool1 import router as tool1_router
 from bot.handlers.tool2 import router as tool2_router
 from bot.handlers.tool3 import router as tool3_router
+from bot.handlers.tool4 import router as tool4_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +30,7 @@ async def main():
     dp.include_router(tool1_router)
     dp.include_router(tool2_router)
     dp.include_router(tool3_router)
+    dp.include_router(tool4_router)
 
     logging.info("🚀 Telegram Bot Tool 已启动（Polling模式）")
     await dp.start_polling(bot)
