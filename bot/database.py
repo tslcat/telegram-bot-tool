@@ -27,6 +27,16 @@ async def init_db():
                 uploaded_at TEXT NOT NULL
             )
         """)
+        # 反向代理表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS proxies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                domain TEXT NOT NULL,
+                target TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
         await db.commit()
 
 # ==================== 笔记相关 ====================
@@ -68,6 +78,15 @@ async def bulk_insert_notes(notes: list):
             )
         await db.commit()
 
+async def delete_note_by_id(note_id: int, user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM notes WHERE id = ? AND user_id = ?",
+            (note_id, user_id)
+        )
+        await db.commit()
+        return db.total_changes > 0
+
 # ==================== 图床图片相关 ====================
 async def add_image_record(user_id: int, url: str, filename: str = ""):
     uploaded_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -98,11 +117,50 @@ async def bulk_insert_images(images: list):
             )
         await db.commit()
 
-async def delete_note_by_id(note_id: int, user_id: int) -> bool:
+# ==================== 反向代理相关 ====================
+async def add_proxy(user_id: int, domain: str, target: str):
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "DELETE FROM notes WHERE id = ? AND user_id = ?",
-            (note_id, user_id)
+            "INSERT INTO proxies (user_id, domain, target, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, domain, target, created_at)
+        )
+        await db.commit()
+
+async def get_user_proxies(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT id, domain, target, created_at FROM proxies WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,)
+        )
+        rows = await cursor.fetchall()
+        return [{"id": r[0], "domain": r[1], "target": r[2], "created_at": r[3]} for r in rows]
+
+async def delete_proxy_by_id(proxy_id: int, user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM proxies WHERE id = ? AND user_id = ?",
+            (proxy_id, user_id)
         )
         await db.commit()
         return db.total_changes > 0
+
+async def get_all_proxies():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT user_id, domain, target, created_at FROM proxies ORDER BY created_at DESC")
+        rows = await cursor.fetchall()
+        return [{"user_id": r[0], "domain": r[1], "target": r[2], "created_at": r[3]} for r in rows]
+
+async def clear_all_proxies():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM proxies")
+        await db.commit()
+
+async def bulk_insert_proxies(proxies: list):
+    async with aiosqlite.connect(DB_PATH) as db:
+        for p in proxies:
+            await db.execute(
+                "INSERT INTO proxies (user_id, domain, target, created_at) VALUES (?, ?, ?, ?)",
+                (p["user_id"], p["domain"], p["target"], p["created_at"])
+            )
+        await db.commit()
